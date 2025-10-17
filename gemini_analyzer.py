@@ -198,8 +198,14 @@ class GeminiAnalyzer:
     
     def _create_analysis_prompt(self, text: str, unicode_analysis: Dict = None) -> str:
         """Erstellt optimierten Analyse-Prompt"""
-        
-        prompt = f"""Du bist ein spezialisierter KI-Detektor für akademische Texte mit Expertise in der Erkennung maschinell generierter vs. menschlich verfasster wissenschaftlicher Arbeiten.
+        # Build prompt in safe parts. Avoid using f-strings for blocks that contain
+        # literal braces (JSON examples) to prevent accidental f-string interpolation
+        # which leads to "Invalid format specifier" errors when the block contains
+        # colons and quoted strings.
+
+        prompt_parts = []
+        prompt_parts.append(
+            """Du bist ein spezialisierter KI-Detektor für akademische Texte mit Expertise in der Erkennung maschinell generierter vs. menschlich verfasster wissenschaftlicher Arbeiten.
 
 AUFGABE: Analysiere den folgenden Textabschnitt und klassifiziere ihn als KI-generiert oder menschlich verfasst.
 
@@ -212,25 +218,31 @@ ANALYSIERE FOLGENDE INDIKATOREN:
 6. AI-Phrasen: Typische Konstruktionen wie "es ist wichtig zu beachten", "in diesem Zusammenhang"
 7. Emotionalität: Neutrale Sachlichkeit (KI) vs. persönlicher Ausdruck (menschlich)
 """
-        
-        # Füge Unicode-Analyse hinzu wenn verfügbar
-        if unicode_analysis and unicode_analysis.get('total_invisible_count', 0) > 0:
-            prompt += f"""
-ZUSÄTZLICHE INFORMATION - UNSICHTBARE ZEICHEN ERKANNT:
-Der Text enthält {unicode_analysis['total_invisible_count']} unsichtbare Unicode-Zeichen:
-{json.dumps(unicode_analysis.get('invisible_characters_found', {}), indent=2, ensure_ascii=False)}
+        )
 
-Dies ist ein STARKER Indikator für KI-Generierung (Wasserzeichen-System).
-Gewichte diese Information hoch in deiner Analyse.
-"""
-        
-        prompt += f"""
-ANTWORTE AUSSCHLIESSLICH im folgenden JSON-Format (keine zusätzlichen Kommentare):
+        # Füge Unicode-Analyse hinzu wenn verfügbar (use .format to inject values)
+        if unicode_analysis and unicode_analysis.get('total_invisible_count', 0) > 0:
+            unicode_block = (
+                "\nZUSÄTZLICHE INFORMATION - UNSICHTBARE ZEICHEN ERKANNT:\n"
+                "Der Text enthält {count} unsichtbare Unicode-Zeichen:\n"
+                "{dump}\n\n"
+                "Dies ist ein STARKER Indikator für KI-Generierung (Wasserzeichen-System).\n"
+                "Gewichte diese Information hoch in deiner Analyse.\n"
+            ).format(
+                count=unicode_analysis['total_invisible_count'],
+                dump=json.dumps(unicode_analysis.get('invisible_characters_found', {}), indent=2, ensure_ascii=False)
+            )
+
+            prompt_parts.append(unicode_block)
+
+        # Add the JSON response contract block as a plain string (no f-string)
+        prompt_parts.append(
+            """\nANTWORTE AUSSCHLIESSLICH im folgenden JSON-Format (keine zusätzlichen Kommentare):
 {
-    "confidence_score": 0.0-1.0,
+    "confidence_score": "0.0-1.0",
     "is_ai_generated": true/false,
-    "ai_probability": 0.0-1.0,
-    "human_probability": 0.0-1.0,
+    "ai_probability": "0.0-1.0",
+    "human_probability": "0.0-1.0",
     "reasoning": "Detaillierte Begründung der Klassifikation in 2-3 Sätzen",
     "specific_indicators": ["Liste der erkannten Indikatoren"],
     "suspicious_phrases": ["Verdächtige Phrasen falls gefunden"],
@@ -240,11 +252,13 @@ ANTWORTE AUSSCHLIESSLICH im folgenden JSON-Format (keine zusätzlichen Kommentar
         "emotional_expression": "low/medium/high"
     }
 }
+\nZU ANALYSIERENDER TEXT:\n"""
+        )
 
-ZU ANALYSIERENDER TEXT:
-{text[:self.chunk_size]}
-"""
-        
+        # Finally append the actual text to analyze (slice to chunk_size)
+        prompt_parts.append(text[:self.chunk_size])
+
+        prompt = "".join(prompt_parts)
         return prompt
     
     def _make_robust_api_call(self, prompt: str) -> Any:
